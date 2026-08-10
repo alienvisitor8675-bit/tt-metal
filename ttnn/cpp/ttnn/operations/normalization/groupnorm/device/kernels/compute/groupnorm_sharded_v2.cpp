@@ -256,7 +256,7 @@ void kernel_main() {
             const uint32_t synchronized_block_w = ((valid_block_w + subblock_w - 1) / subblock_w) * subblock_w;
             const uint32_t math_block_w = synchronized_block_w == block_w ? valid_block_w : block_w;
             const auto valid_group_shape =
-                ckl::EltwiseShape::grid(block_h, math_block_w, subblock_w, ckl::BlockTailSync::FullBlock);
+                ckl::IterationShape::grid(block_h, math_block_w, subblock_w, ckl::BlockTailSync::FullBlock);
 
             // mask input
             index_h_offset = index_b_offset + index_g_offset;
@@ -308,11 +308,10 @@ void kernel_main() {
             ckl::eltwise_chain(
                 valid_group_shape,
                 ckl::BinaryFpu<
+                    ckl::BinaryFpuOp::Mul,
                     strided_block_input(dfb_x_id),
                     ckl::input(
                         dfb_ones_id, ckl::WaitPolicy::Upfront, ckl::PopPolicy::None, ckl::DataFormatReconfig::Disabled),
-                    ckl::BinaryFpuOp::Mul,
-                    ckl::BroadcastDim::None,
                     ckl::Dst::D0,
                     ckl::DestAccumulation::WholeShape>{ckl::StridedTileRange{0, block_w}},
                 ckl::PackTile<ckl::output(
@@ -367,6 +366,7 @@ void kernel_main() {
                     ckl::DataFormatReconfig::Disabled),
                 ckl::input(
                     dfb_ex_global_id,
+                    ckl::BroadcastDim::Scalar,
                     ckl::WaitPolicy::Upfront,
                     ckl::PopPolicy::AtEnd,
                     ckl::DataFormatReconfig::Disabled),
@@ -374,8 +374,7 @@ void kernel_main() {
                     dfb_x_id,
                     ckl::ReservePolicy::PerBlockSize,
                     ckl::PushPolicy::PerBlockSize,
-                    ckl::DataFormatReconfig::Disabled),
-                ckl::BroadcastDim::Scalar>(valid_group_shape);
+                    ckl::DataFormatReconfig::Disabled)>(valid_group_shape);
 
             reconfig_data_format_srcb(dfb_ex_global_id, dfb_input_mask_id);
             mul_init(dfb_x_id, dfb_input_mask_id);
@@ -417,10 +416,9 @@ void kernel_main() {
             ckl::eltwise_chain(
                 valid_group_shape,
                 ckl::BinaryFpu<
-                    strided_block_input(dfb_x_id),
-                    strided_block_input(dfb_x_id),
                     ckl::BinaryFpuOp::Mul,
-                    ckl::BroadcastDim::None,
+                    strided_block_input(dfb_x_id),
+                    strided_block_input(dfb_x_id),
                     ckl::Dst::D0,
                     ckl::DestAccumulation::WholeShape>{
                     ckl::StridedTileRange{0, block_w}, ckl::StridedTileRange{0, block_w}},
@@ -466,17 +464,16 @@ void kernel_main() {
             // The row mask keeps padding out of both sums, so the reduced value is the variance
             // over real rows. Compute 1/sqrt(variance + epsilon).
             ckl::eltwise_chain(
-                ckl::EltwiseShape::single(),
+                ckl::IterationShape::one_tile(),
                 ckl::BinaryFpu<
+                    ckl::BinaryFpuOp::Add,
                     ckl::input(
                         dfb_ex_global_id,
                         ckl::WaitPolicy::PerTile,
                         ckl::PopPolicy::PerTile,
                         ckl::DataFormatReconfig::Disabled),
                     ckl::input(
-                        dfb_eps_id, ckl::WaitPolicy::None, ckl::PopPolicy::None, ckl::DataFormatReconfig::Disabled),
-                    ckl::BinaryFpuOp::Add,
-                    ckl::BroadcastDim::None>{},
+                        dfb_eps_id, ckl::WaitPolicy::None, ckl::PopPolicy::None, ckl::DataFormatReconfig::Disabled)>{},
                 ckl::Rsqrt<ckl::Approx::Exact, ckl::Legacy::On, ckl::Dst::D0>{},
                 ckl::PackTile<ckl::output(
                     dfb_ex2pe_id,
@@ -496,13 +493,16 @@ void kernel_main() {
                     ckl::OperandKind::Block,
                     ckl::DataFormatReconfig::Disabled),
                 ckl::input(
-                    dfb_ex2pe_id, ckl::WaitPolicy::Upfront, ckl::PopPolicy::AtEnd, ckl::DataFormatReconfig::Disabled),
+                    dfb_ex2pe_id,
+                    ckl::BroadcastDim::Scalar,
+                    ckl::WaitPolicy::Upfront,
+                    ckl::PopPolicy::AtEnd,
+                    ckl::DataFormatReconfig::Disabled),
                 ckl::output(
                     dfb_x_id,
                     ckl::ReservePolicy::PerBlockSize,
                     ckl::PushPolicy::PerBlockSize,
-                    ckl::DataFormatReconfig::Disabled),
-                ckl::BroadcastDim::Scalar>(valid_group_shape);
+                    ckl::DataFormatReconfig::Disabled)>(valid_group_shape);
             dfb_x.wait_front(block_hw);
             //  add or copy with previous output results
             uint32_t block_w_curr = index_g_offset == (per_core_N - block_w_last) ? block_w_last : block_w;
@@ -515,17 +515,16 @@ void kernel_main() {
                     const ckl::StridedTileRange output_range{index_b_offset + index_g_offset + w, per_core_N};
                     if (copy_or_add) {
                         ckl::eltwise_chain(
-                            ckl::EltwiseShape::col(block_h),
+                            ckl::IterationShape::col(block_h),
                             ckl::CopyTile<strided_col_input(dfb_x_id)>{input_range},
                             ckl::PackTile<strided_output(dfb_out_id)>{output_range});
                     } else {
                         ckl::eltwise_chain(
-                            ckl::EltwiseShape::col(block_h),
+                            ckl::IterationShape::col(block_h),
                             ckl::BinaryFpu<
-                                strided_col_input(dfb_out_id),
-                                strided_col_input(dfb_x_id),
                                 ckl::BinaryFpuOp::Add,
-                                ckl::BroadcastDim::None>{output_range, input_range},
+                                strided_col_input(dfb_out_id),
+                                strided_col_input(dfb_x_id)>{output_range, input_range},
                             ckl::PackTile<strided_output(dfb_out_id)>{output_range});
                     }
 
@@ -553,17 +552,16 @@ void kernel_main() {
                 const ckl::StridedTileRange output_range{index_b_offset + index_g_offset, per_core_N};
                 reconfig_data_format_srcb(dfb_x_id, dfb_in_negative_mask_id);
                 ckl::eltwise_chain(
-                    ckl::EltwiseShape::grid(block_h, block_w_curr),
+                    ckl::IterationShape::grid(block_h, block_w_curr),
                     ckl::BinaryFpu<
+                        ckl::BinaryFpuOp::Mul,
                         strided_block_input(dfb_in_id),
                         ckl::input(
                             dfb_in_negative_mask_id,
                             ckl::WaitPolicy::None,
                             ckl::PopPolicy::None,
                             ckl::OperandKind::Row,
-                            ckl::DataFormatReconfig::Disabled),
-                        ckl::BinaryFpuOp::Mul,
-                        ckl::BroadcastDim::None>{output_range},
+                            ckl::DataFormatReconfig::Disabled)>{output_range},
                     ckl::PackTile<strided_output(dfb_in_id)>{output_range});
 
                 // data in dfb_x_id has valid data only for current group
@@ -571,12 +569,10 @@ void kernel_main() {
                 // just add them together
                 reconfig_data_format_srcb(dfb_in_negative_mask_id, dfb_x_id);
                 ckl::eltwise_chain(
-                    ckl::EltwiseShape::grid(block_h, block_w_curr),
-                    ckl::BinaryFpu<
-                        strided_block_input(dfb_in_id),
-                        strided_block_input(dfb_x_id),
-                        ckl::BinaryFpuOp::Add,
-                        ckl::BroadcastDim::None>{output_range, ckl::StridedTileRange{0u, block_w}},
+                    ckl::IterationShape::grid(block_h, block_w_curr),
+                    ckl::
+                        BinaryFpu<ckl::BinaryFpuOp::Add, strided_block_input(dfb_in_id), strided_block_input(dfb_x_id)>{
+                            output_range, ckl::StridedTileRange{0u, block_w}},
                     ckl::PackTile<strided_output(dfb_in_id)>{output_range});
                 dfb_in_negative_mask.pop_front(block_w);
             }
@@ -647,6 +643,7 @@ void kernel_main() {
                     ckl::DataFormatReconfig::Disabled),
                 ckl::input(
                     dfb_gamma_id,
+                    ckl::BroadcastDim::Row,
                     ckl::WaitPolicy::Upfront,
                     ckl::PopPolicy::None,
                     ckl::OperandKind::Row,
@@ -655,8 +652,7 @@ void kernel_main() {
                     dfb_outgamma_id,
                     ckl::ReservePolicy::Upfront,
                     ckl::PushPolicy::AtEnd,
-                    ckl::DataFormatReconfig::Disabled),
-                ckl::BroadcastDim::Row>(ckl::EltwiseShape::grid(per_core_M, per_core_N));
+                    ckl::DataFormatReconfig::Disabled)>(ckl::IterationShape::grid(per_core_M, per_core_N));
             dfb_outgamma.wait_front(per_core_MN);
         } else {
             // fp32: see non-negative-mask branch above.
@@ -669,6 +665,7 @@ void kernel_main() {
                     dfb_in_id, ckl::WaitPolicy::Upfront, ckl::PopPolicy::PerTile, ckl::DataFormatReconfig::Disabled),
                 ckl::input(
                     dfb_gamma_id,
+                    ckl::BroadcastDim::Row,
                     ckl::WaitPolicy::Upfront,
                     ckl::PopPolicy::None,
                     ckl::OperandKind::Row,
@@ -677,8 +674,7 @@ void kernel_main() {
                     dfb_in_id,
                     ckl::ReservePolicy::PerTile,
                     ckl::PushPolicy::PerTile,
-                    ckl::DataFormatReconfig::Disabled),
-                ckl::BroadcastDim::Row>(ckl::EltwiseShape::grid(per_core_M, per_core_N));
+                    ckl::DataFormatReconfig::Disabled)>(ckl::IterationShape::grid(per_core_M, per_core_N));
         }
     }
 
@@ -698,6 +694,7 @@ void kernel_main() {
                     ckl::DataFormatReconfig::Disabled),
                 ckl::input(
                     dfb_beta_id,
+                    ckl::BroadcastDim::Row,
                     ckl::WaitPolicy::Upfront,
                     ckl::PopPolicy::None,
                     ckl::OperandKind::Row,
@@ -706,8 +703,7 @@ void kernel_main() {
                     dfb_outbeta_id,
                     ckl::ReservePolicy::Upfront,
                     ckl::PushPolicy::AtEnd,
-                    ckl::DataFormatReconfig::Disabled),
-                ckl::BroadcastDim::Row>(ckl::EltwiseShape::grid(per_core_M, per_core_N));
+                    ckl::DataFormatReconfig::Disabled)>(ckl::IterationShape::grid(per_core_M, per_core_N));
             dfb_outbeta.wait_front(per_core_MN);
         } else {
             // fp32: see non-negative-mask branch above.
@@ -720,6 +716,7 @@ void kernel_main() {
                     dfb_in_id, ckl::WaitPolicy::Upfront, ckl::PopPolicy::PerTile, ckl::DataFormatReconfig::Disabled),
                 ckl::input(
                     dfb_beta_id,
+                    ckl::BroadcastDim::Row,
                     ckl::WaitPolicy::Upfront,
                     ckl::PopPolicy::None,
                     ckl::OperandKind::Row,
@@ -728,8 +725,7 @@ void kernel_main() {
                     dfb_in_id,
                     ckl::ReservePolicy::PerTile,
                     ckl::PushPolicy::PerTile,
-                    ckl::DataFormatReconfig::Disabled),
-                ckl::BroadcastDim::Row>(ckl::EltwiseShape::grid(per_core_M, per_core_N));
+                    ckl::DataFormatReconfig::Disabled)>(ckl::IterationShape::grid(per_core_M, per_core_N));
         }
     }
 
