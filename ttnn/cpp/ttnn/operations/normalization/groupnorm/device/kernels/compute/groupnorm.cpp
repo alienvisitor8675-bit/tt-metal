@@ -460,7 +460,7 @@ void kernel_main() {
                 }
 #ifdef TILIZE_IN
                 ckl::eltwise_chain(
-                    ckl::IterationShape::grid(out_block_h_actual, block_w, subblock_w),
+                    ckl::IterationShape::grid(out_block_h_actual, block_w).block_size(subblock_w),
                     ckl::BinaryFpu<
                         ckl::BinaryFpuOp::Sub,
                         strided_block_input(dfb_input_id),
@@ -494,7 +494,7 @@ void kernel_main() {
                         ckl::ReservePolicy::Upfront,
                         ckl::PushPolicy::AtEnd,
                         ckl::DataFormatReconfig::Disabled)>(
-                    ckl::IterationShape::grid(out_block_h_actual, block_w, subblock_w));
+                    ckl::IterationShape::grid(out_block_h_actual, block_w).block_size(subblock_w));
 #endif
                 if constexpr (extra_out_block) {
                     if (out_block_index == (num_out_blocks_padded - 1)) {
@@ -555,7 +555,7 @@ void kernel_main() {
                         ckl::ReservePolicy::Upfront,
                         ckl::PushPolicy::AtEnd,
                         ckl::DataFormatReconfig::Disabled)>(
-                    ckl::IterationShape::grid(out_block_h_actual, block_w, subblock_w));
+                    ckl::IterationShape::grid(out_block_h_actual, block_w).block_size(subblock_w));
                 if constexpr (extra_out_block) {
                     if (out_block_index == (num_out_blocks_padded - 1)) {
                         dfb_x.pop_front(out_block_hw_normal - out_block_hw_last);
@@ -651,7 +651,7 @@ void kernel_main() {
                 }
 #ifdef TILIZE_IN
                 ckl::eltwise_chain(
-                    ckl::IterationShape::grid(out_block_h_actual, block_w, subblock_w),
+                    ckl::IterationShape::grid(out_block_h_actual, block_w).block_size(subblock_w),
                     ckl::BinaryFpu<
                         ckl::BinaryFpuOp::Sub,
                         strided_block_input(dfb_input_id),
@@ -685,7 +685,7 @@ void kernel_main() {
                         ckl::ReservePolicy::Upfront,
                         ckl::PushPolicy::AtEnd,
                         ckl::DataFormatReconfig::Disabled)>(
-                    ckl::IterationShape::grid(out_block_h_actual, block_w, subblock_w));
+                    ckl::IterationShape::grid(out_block_h_actual, block_w).block_size(subblock_w));
 #endif
                 if constexpr (extra_out_block) {
                     if (out_block_index == (num_out_blocks_padded - 1)) {
@@ -716,7 +716,7 @@ void kernel_main() {
                         ckl::ReservePolicy::Upfront,
                         ckl::PushPolicy::AtEnd,
                         ckl::DataFormatReconfig::Disabled)>(
-                    ckl::IterationShape::grid(out_block_h_actual, block_w, subblock_w));
+                    ckl::IterationShape::grid(out_block_h_actual, block_w).block_size(subblock_w));
                 if constexpr (extra_out_block) {
                     if (out_block_index == (num_out_blocks_padded - 1)) {
                         dfb_xmm.pop_front(out_block_hw_normal - out_block_hw_last);
@@ -750,7 +750,7 @@ void kernel_main() {
                         ckl::ReservePolicy::Upfront,
                         ckl::PushPolicy::AtEnd,
                         ckl::DataFormatReconfig::Disabled)>(
-                    ckl::IterationShape::grid(out_block_h_actual, block_w, subblock_w));
+                    ckl::IterationShape::grid(out_block_h_actual, block_w).block_size(subblock_w));
                 if constexpr (extra_out_block) {
                     if (out_block_index == (num_out_blocks_padded - 1)) {
                         dfb_x.pop_front(out_block_hw_normal - out_block_hw_last);
