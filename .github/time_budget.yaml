@@ -378,7 +378,9 @@ models:
     wh_galaxy: 345
     wh_galaxy_perf: 160
     bh_galaxy: 470
-    bh_sc1: 437
+    # Fabric2D TorusXY Kimi padded coverage needs 11 additional minutes over its
+    # previous Fabric2D timeouts; the matrix was already using 435 of 437 minutes.
+    bh_sc1: 446
     bh_sc1_high_power: 143
     wh_n150: 500
     wh_n150_civ2: 300
