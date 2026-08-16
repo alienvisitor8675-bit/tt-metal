@@ -178,17 +178,23 @@ def infer_unpack_out(
             )
         return register_format_hint
 
-    # MX formats can only exist in L1, not in registers. Hardware unpacks MX to bfloat16 for math.
-    # it can also unpack into float16 and TF32 but bfloat16 is the default for MX inputs and default in metal in general.
-    if input_format.is_mx_format():
-        return DataFormat.Float16_b
-
     # Sub-byte BFP formats can only exist in L1. For UNPACR configuration,
     # BFP2/BFP4/BFP8 inputs keep matching InDataFormat/OutDataFormat values;
     # the unpacker internally normalizes the datum into the BF16 source-register
     # representation before math consumes it.
     if input_format in [DataFormat.Bfp4_b, DataFormat.Bfp2_b]:
         return input_format
+
+    is_mx_input = input_format.is_mx_format()
+    if is_mx_input or input_format in (DataFormat.Float16, DataFormat.Float16_b):
+        if unpacking_to_dest and is_fp32_dest_acc_en == DestAccumulation.Yes:
+            # Expand L1 formats to a complete 32-bit value when writing
+            # directly to a 32-bit destination register.
+            return DataFormat.Float32
+
+        # MX formats can only exist in L1, not in registers. Hardware unpacks MX to bfloat16 for math.
+        # it can also unpack into float16 and TF32 but bfloat16 is the default for MX inputs and default in metal in general.
+        return DataFormat.Float16_b if is_mx_input else input_format
 
     if (
         input_format == DataFormat.Float32

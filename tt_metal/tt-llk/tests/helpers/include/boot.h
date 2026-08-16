@@ -96,7 +96,7 @@ TT_ALWAYS_INLINE void device_setup()
     ckernel::reg_write(RISCV_DEBUG_REG_DEST_CG_CTRL, 0);
 #endif
 #if defined(ARCH_BLACKHOLE) || defined(ARCH_QUASAR)
-    TTI_ZEROACC(ckernel::p_zeroacc::CLR_ALL, 0, 0, 1, 0);
+    TTI_ZEROACC(ckernel::p_zeroacc::CLR_ALL, is_fp32_dest_acc_en, 0, 1, 0);
 #else
     TTI_ZEROACC(ckernel::p_zeroacc::CLR_ALL, 0, 0);
 #endif
