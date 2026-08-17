@@ -192,6 +192,11 @@ on:
         type: string
         default: ""
         description: "Commit SHA to test (default: HEAD)"
+      use-artifacts-from-run:
+        required: false
+        type: string
+        default: ""
+        description: "TRIAL ONLY - DO NOT MERGE. Run ID to download build artifacts from (skips build)."
   push:
     branches: ["main"]
   schedule:
@@ -246,6 +251,7 @@ jobs:
       use-system-sfpi: true
       ref: ${{ inputs.ref || github.sha }}
       checkout-filter: tree:0
+      use-artifacts-from-run: ${{ inputs.use-artifacts-from-run || '' }}
 
   resolve-docker-pull-refs:
     needs: [check-harbor, build-artifact]
