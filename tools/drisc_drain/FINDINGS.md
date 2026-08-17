@@ -5109,3 +5109,131 @@ Card healthy after the reboot: `driscz` ResNet rep **0.0016125 s**, 0 stalls, 0 
 interpreter of the same minor version: `ln -sfn /usr/bin/python3.10 python_env/bin/python` (3.10.12, same `cp310`
 ABI — `import ttnn` then works). The C++ `--clkprobe` path needs no venv at all, which is why the clock
 measurement above was unaffected.
+
+## §N+47 — ONE SHARED FREQUENCY, measured on a long baseline: the per-core fits were BIASED, not noisy (bh-05 / **p100a**, 2026-08-14)
+
+§N+46 gave every DRISC its own least-squares frequency fit and called that a virtue ("one self-consistent
+fit"). It is the opposite. This section discards all six per-core rates, shares ONE frequency across every
+context on the chip, and measures that frequency on a ~140x longer baseline. Per-DRISC spread on the
+window-open metric falls **138 -> 24.5 us** and the worst offset **130.7 -> 17.7 us (7.4x)**, on a window that
+is *longer* (774 -> 1042 ms), which if anything understates it.
+
+> **READ THIS FIRST — the numbers in this section rest on an INVALID METRIC.** Every figure below compares a
+> DRISC zone-window OPEN against the worker zone-window OPEN. Those are **two independent physical events**: a
+> resident drainer's self-zone window arms when it first sees work, a worker's window opens when the workload
+> starts. Their proximity is partly clock accuracy and partly coincidence, and the two are not separable from
+> this measurement. A zone-window comparison **cannot validate an anchor** — it can only fail to detect a gross
+> error. The 24.5 us is therefore an upper bound of unknown tightness, not a residual. §N+48 replaces it with a
+> common-trigger sync event, where all six DRISCs mark the *same physical instant* and the spread in rendered
+> timestamps is pure anchor + render error. Do not quote 24.5 us as "the anchor is good to 25 us".
+
+### The change, in two parts
+
+1. **`spacing_us` on `sync_device_clock`**, and the worker sync now passes 500 us. 100 samples spread over
+   ~50 ms instead of ~360 us of back-to-back MMIO round trips — a ~140x longer regression baseline for the
+   slope. Cost: 50 ms of a 9-12 s device open.
+2. **`sync.frequency` is used for every `AddCore`**, and each core's own `ds.frequency` is **discarded**. The
+   anchor PAIR (`host_anchor`, `device_at_anchor`) is still measured per core on that core, so the per-core
+   OFFSET that §N+46 exists to fix is untouched. Only the RATE is shared.
+
+Note which call site got the long baseline, because the asymmetry is the whole story: the **worker** sync at
+`perf_debug_profiler.cpp:835` passes `spacing_us=500`; the six **per-DRISC** syncs at `:898` still run at the
+default 0. So the shared value is the well-measured one and the discarded values are the badly-measured ones.
+
+### The evidence that the per-core fits were BIASED, which is what makes discarding them right
+
+The log now prints each core's discarded fit as a deviation in ppm from the shared rate. All six, in log order
+(DRISC 0..5 = `(9,9) (9,5) (9,2) (0,3) (0,0) (9,0)`):
+
+| DRISC | 0 | 1 | 2 | 3 | 4 | 5 | mean | range |
+|---|---|---|---|---|---|---|---|---|
+| own fit vs shared, ppm | −13.6 | −51.0 | −37.0 | −57.0 | −40.2 | −43.0 | **−40.3** | 43.4 |
+
+**Every one is negative.** That is the finding. Zero-mean fit noise produces a mix of signs; six negatives out
+of six is a systematic bias in the short-baseline estimator (p = 1/32 under a fair-coin null, and the magnitudes
+cluster far from zero besides). Two consequences, both of which invert the obvious remedies:
+
+- **Averaging the per-core fits would NOT have helped.** The error is common to all six, so their mean carries
+  it in full. Only lengthening the baseline removes it. Anyone reaching for "average the noisy fits" — which is
+  where I would have gone first — would have kept ~40 ppm of bias and concluded the idea failed.
+- **Nor would fitting each core more carefully.** The bias is a property of a ~360 us baseline against ~us of
+  host-timestamp jitter, not of which core is being read.
+
+Set against §N+46's own measurements of the two clocks' TRUE behaviour: the DRAM and Tensix counters' real rates
+agree to **~5 ppm** during active operation (three 500 ms brackets: −4.6, +2.8, −5.8 ppm), while §N+46's
+per-core fits scattered across **1.349902–1.350039 GHz = ~101 ppm**. So the fit noise was ~20x the physical
+difference it was supposed to be measuring. Sharing one rate trades a ~101 ppm noise term for a ~5 ppm physical
+one: **~3.8 us over a 757 ms window instead of ~75 us.**
+
+### Why sharing a rate is correct, not a convenient approximation
+
+**Alignment is a RELATIVE property.** What a reader needs is not that each row's rate is individually accurate
+but that the rows agree with each other. With one shared rate:
+
+- **Differential drift between rows is zero BY CONSTRUCTION.** No two contexts can drift apart, whatever the
+  shared value is, because they scale identically.
+- **Any error in the shared value is COMMON-MODE.** It shifts worker and DRISC rows together, which is
+  invisible on a timeline — you cannot see a uniform stretch of everything.
+
+A rate error is a *rate* error: it grows with time since the anchor. That is why it showed up as rows drifting
+apart rather than as a constant skew, and it is why the ~1.3 s between the anchor and the workload turned
+~40 ppm into tens of us of displacement. Measured in the previous session: each DRISC row was displaced 46-70 us
+with the sign tracking its own fit error, **correlation 0.985** — the tell that identified the whole term.
+
+### The measurement (re-derived from the captures, not transcribed)
+
+The run logs from that session were lost with the container's `/tmp`, but the captures live under `/localdev`
+and survived. Re-derived here with `tracy_zone_csv` + a Python window pass (`/tmp/win.py`); DRISC contexts are
+0..5, identified by name via `tracy_ctx_inspect`:
+
+| | run1 (BEFORE) | run2 (BEFORE) | sharedfreq (AFTER) |
+|---|---|---|---|
+| capture | `anchor_run1.tracy` | `anchor_run2.tracy` | `anchor_sharedfreq.tracy` |
+| worker window | 773.640 ms | 770.017 ms | **1042.498 ms** |
+| DRISC 0 `(9,9)` open | +130.7 us | +41.4 us | −5.7 us |
+| DRISC 1 `(9,5)` open | +81.0 us | −145.0 us | −5.4 us |
+| DRISC 2 `(9,2)` open | −7.2 us | +6.5 us | −6.8 us |
+| DRISC 3 `(0,3)` open | +111.0 us | +18.1 us | +4.6 us |
+| DRISC 4 `(0,0)` open | +86.2 us | +48.2 us | +0.5 us |
+| DRISC 5 `(9,0)` open | +96.3 us | +34.3 us | +17.7 us |
+| **open SPREAD (max−min)** | **138.0 us** | **193.2 us** | **24.5 us** |
+| **worst \|offset\|** | **130.7 us** | **145.0 us** | **17.7 us** |
+| stdev of offsets | 43.6 us | 66.6 us | **8.6 us** |
+
+**The AFTER window is 35% LONGER (1042 vs 774 ms) and the offsets still collapsed.** Since a rate error grows
+with elapsed time, a longer window is a harder test, so the ratio understates the improvement.
+
+**Two arithmetic corrections to the figures this section was handed.** The improvement was reported as "7.2x,
+spread 130 -> 25 us, worst |offset| 70 -> 18 us". Re-derivation gives spread **138.0 -> 24.5 us (5.6x)** and
+worst |offset| **130.7 -> 17.7 us (7.4x)** — so the 7.2x is the *worst-offset* ratio, not the spread ratio, and
+the two must not be quoted interchangeably. The "70 us" is a third quantity again: it is the 46-70 us
+*frequency-attributable displacement* from the correlation analysis, not a measured window offset. Also note
+the BEFORE case is unstable between its own two runs (mean offset +83.0 us vs +0.6 us, spread 138 vs 193), so a
+single BEFORE run is not a reliable baseline — which is a further reason the window metric is weak.
+
+### No regression
+
+| | value |
+|---|---|
+| producer stalls | **0** |
+| records dropped | **0** |
+| ts regressions publish / consume | **0 / 0** |
+| `overflows region` / `FAILED TO LOAD` | **none** |
+| inference time | unchanged vs §N+46 |
+
+Nothing on the drain path changed and no firmware changed; the whole diff is host-side anchor bookkeeping plus
+50 ms of extra sampling inside device open.
+
+### Scope limits, stated
+
+- **The ~5 ppm true-rate agreement was measured on bh-05 only.** It is the justification for sharing a rate at
+  all, and it has not been checked on bh-26 or any other part. A part whose two domains ran at genuinely
+  different RATES (not merely different duty cycles, which is what §N+46 found) would have drift *injected* by
+  a shared frequency rather than removed. The tell is DRISC-vs-worker zone SPAN disagreement growing with
+  window length — the same trigger §N+46 records for revisiting the no-sync decision.
+- **The DRAM counter's effective rate is not 1.35 GHz across an idle interval.** §N+46 measured it advancing
+  ~19.75 s per 32 s of idle wall time, i.e. ~0.62 of the active rate. Zones are emitted during active work so
+  the shared 1.35 GHz is right where it is used, but the ANCHOR-to-EVENT gap may contain idle time, and a fixed
+  rate mis-scales that gap. This is a live residual, not a closed one, and it is one of the things §N+48's
+  sync event is built to expose: fire a trigger near the anchor and again much later, and a rate/idle-scaling
+  error appears as a residual that GROWS with time since the anchor.

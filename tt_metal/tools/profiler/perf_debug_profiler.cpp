@@ -666,7 +666,16 @@ struct PerfDebugSync {
     bool valid = false;
 };
 
-PerfDebugSync sync_device_clock(tt::Cluster& cluster, uint32_t chip_id, const CoreCoord& worker) {
+// spacing_us spreads the samples in time to lengthen the REGRESSION BASELINE. It exists because the slope this
+// function fits is baseline-limited, and at the default (0 = back-to-back) the baseline is only ~360 us -- 100
+// samples x ~3.6 us of MMIO round trip -- so with ~us of host-timestamp jitter the fitted frequency carries
+// ~1e-4 of error. MEASURED consequence (FINDINGS N+47): the six DRISC fits scattered over 99 ppm while the two
+// clocks' TRUE rates agree to ~5 ppm, i.e. the fit noise was 20x the physical difference, and multiplied by the
+// ~1.3 s between the anchor and the workload it displaced each DRISC row by 46-70 us with the sign tracking its
+// own fit error (correlation 0.985). Frequency error is a RATE error: it grows with time since the anchor, which
+// is why it shows up as rows drifting apart rather than as a constant skew.
+PerfDebugSync sync_device_clock(
+    tt::Cluster& cluster, uint32_t chip_id, const CoreCoord& worker, uint32_t spacing_us = 0) {
     // RISCV_DEBUG_REG_WALL_CLOCK_L/H. Reading L atomically LATCHES H, so read L then H (H's own latency is
     // irrelevant).
     //
@@ -698,6 +707,9 @@ PerfDebugSync sync_device_clock(tt::Cluster& cluster, uint32_t chip_id, const Co
         cluster.read_reg(&hi, target, kWallClockH);
         const int64_t t1 = tracy::Profiler::GetTime();
         samples.push_back(S{(t0 + t1) / 2, (static_cast<uint64_t>(hi) << 32) | lo, t1 - t0});
+        if (spacing_us != 0 && i + 1 < kSamples) {
+            std::this_thread::sleep_for(std::chrono::microseconds(spacing_us));
+        }
     }
     // Drop NoC/PCIe-contended outliers: keep samples whose round-trip is within 1.5x the median.
     std::vector<int64_t> rts;
@@ -817,7 +829,10 @@ void PerfDebugProfiler::start(const std::shared_ptr<distributed::MeshDevice>& me
         PerfDebugSync sync;
         if (!ctx.core_virt.empty()) {
             const CoreCoord w{ctx.core_virt[0].first, ctx.core_virt[0].second};
-            sync = sync_device_clock(cluster, ctx.chip_id, w);
+            // LONG BASELINE, deliberately: 100 samples x 500 us spans ~50 ms instead of ~360 us, cutting the
+            // fitted-frequency error by the baseline ratio (~140x). This is the ONE frequency every context on
+            // this chip will use (see below), so it is worth 50 ms of a 9-12 s device open to measure it well.
+            sync = sync_device_clock(cluster, ctx.chip_id, w, /*spacing_us=*/500);
         }
         if (sync.valid) {
             ctx.synced = true;
@@ -895,27 +910,55 @@ void PerfDebugProfiler::start(const std::shared_ptr<distributed::MeshDevice>& me
                         nit->second.second);
                     continue;
                 }
+                // ONE FREQUENCY FOR EVERY CONTEXT, and per-core anchors carry ONLY the offset. `ds.frequency`
+                // is deliberately DISCARDED.
+                //
+                // Alignment is a RELATIVE property, so what matters is not how accurate each core's rate is but
+                // that they all agree: with a shared rate, differential drift between rows is zero BY
+                // CONSTRUCTION, and any residual error in the shared value is common-mode -- it shifts worker and
+                // DRISC rows together, which is invisible on the timeline.
+                //
+                // Justified by measurement, not assumption: the DRAM and Tensix counters' true rates agree to
+                // ~5 ppm during active operation (three 500 ms probe brackets: -4.6, +2.8, -5.8 ppm), while the
+                // per-core FITS scattered over 99 ppm. Sharing one rate therefore trades a 99 ppm noise term for
+                // a 5 ppm physical one -- 3.8 us over a 757 ms window instead of ~75 us. The anchor PAIR
+                // (host_anchor, device_at_anchor) is still measured on this core and is independent of the rate,
+                // which is what keeps the per-core offset correct.
+                //
+                // Residual risk, stated: if a future part ran its DRAM and Tensix domains at genuinely different
+                // RATES (not merely different duty cycles, which is what N+46 found), a shared frequency would
+                // inject drift instead of removing it. That would show as DRISC-vs-worker zone SPAN disagreement
+                // growing with window length -- the same tell as the mid-capture-gating case.
                 tracy_->AddCore(
                     ctx.chip_id,
                     nit->second.first,
                     nit->second.second,
                     ds.host_anchor,
                     static_cast<double>(ds.device_at_anchor),
-                    ds.frequency);
+                    sync.frequency);
                 // Log the OFFSET, not just the anchor: it is the board-dependence tell. Microseconds means the
                 // part shares an origin and this changed nothing; minutes means it just fixed the capture.
                 const double off_ms =
                     (static_cast<double>(ds.device_at_anchor) - static_cast<double>(sync.device_at_anchor)) /
                     (ds.frequency > 0.0 ? ds.frequency : 1.0) / 1e6;
+                // Report the SHARED frequency actually in use, and the core's own discarded fit as a diagnostic:
+                // its deviation in ppm is a direct read on how noisy the short-baseline fit is, and it is the
+                // number that identified this whole error term. Large ppm here is expected and harmless now --
+                // it would have been a per-row displacement of ppm x (time since anchor) before.
+                const double fit_ppm =
+                    sync.frequency > 0.0 ? (ds.frequency - sync.frequency) / sync.frequency * 1e6 : 0.0;
                 log_info(
                     tt::LogMetal,
-                    "[perf-debug profiler] Device {} DRISC {} NOC0 ({},{}) clock sync: frequency={:.6f} GHz, "
-                    "device_time_at_anchor={} cycles, offset vs worker anchor {:+.3f} ms",
+                    "[perf-debug profiler] Device {} DRISC {} NOC0 ({},{}) clock sync: frequency={:.6f} GHz "
+                    "(shared; own fit {:.6f} = {:+.1f} ppm, discarded), device_time_at_anchor={} cycles, "
+                    "offset vs worker anchor {:+.3f} ms",
                     ctx.chip_id,
                     d,
                     nit->second.first,
                     nit->second.second,
+                    sync.frequency,
                     ds.frequency,
+                    fit_ppm,
                     ds.device_at_anchor,
                     off_ms);
             }
