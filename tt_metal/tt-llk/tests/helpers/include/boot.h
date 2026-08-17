@@ -10,6 +10,9 @@
 #include "cfg_defines.h"
 #include "ckernel.h"
 #include "ckernel_helper.h"
+#if __has_include("build.h")
+#include "build.h"
+#endif
 #if defined(ARCH_QUASAR)
 #include "ckernel_trisc_common.h"
 #endif
@@ -96,7 +99,12 @@ TT_ALWAYS_INLINE void device_setup()
     ckernel::reg_write(RISCV_DEBUG_REG_DEST_CG_CTRL, 0);
 #endif
 #if defined(ARCH_BLACKHOLE) || defined(ARCH_QUASAR)
-    TTI_ZEROACC(ckernel::p_zeroacc::CLR_ALL, is_fp32_dest_acc_en, 0, 1, 0);
+#if __has_include("build.h")
+    constexpr std::uint32_t boot_is_fp32_dest_acc_en = is_fp32_dest_acc_en ? 1 : 0;
+#else
+    constexpr std::uint32_t boot_is_fp32_dest_acc_en = 0;
+#endif
+    TTI_ZEROACC(ckernel::p_zeroacc::CLR_ALL, boot_is_fp32_dest_acc_en, 0, 1, 0);
 #else
     TTI_ZEROACC(ckernel::p_zeroacc::CLR_ALL, 0, 0);
 #endif
