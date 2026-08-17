@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <type_traits>
 
+// boot.h require this fleg for ZEROACC
+constexpr bool is_fp32_dest_acc_en = false;
+
 #include "boot.h"
 #include "counters.h"
 
