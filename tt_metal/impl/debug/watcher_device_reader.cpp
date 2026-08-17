@@ -33,7 +33,6 @@
 #include "dispatch_core_common.hpp"
 #include "impl/dispatch/dispatch_engine_cores.hpp"
 #include "hal_types.hpp"
-#include "api/debug/ring_buffer.h"
 #include "hostdev/debug_ring_buffer_common.h"
 #include "impl/context/metal_context.hpp"
 #include "watcher_device_reader.hpp"
@@ -300,6 +299,7 @@ private:
     void DumpEthLinkStatus() const;
     void DumpRingBuffer(bool to_stdout = false) const;
     void DumpMpscRingBuffer(bool to_stdout = false) const;
+    void EmitRingBuffer(const std::vector<std::string>& lines, bool to_stdout) const;
     void DumpRunState(uint32_t state) const;
     void DumpLaunchMessage() const;
     void DumpWaypoints(bool to_stdout = false) const;
@@ -914,13 +914,15 @@ void WatcherDeviceReader::Core::DumpRingBuffer(bool to_stdout) const {
     const auto* ring_buf_data =
         reinterpret_cast<const debug_spsc_ring_buf_msg_t*>(mbox_data_.watcher().debug_ring_buf().data().data());
 
-    string out;
-    auto lines = FormatRingBuffer(*ring_buf_data, programmable_core_type_);
-    if (!lines.empty()) {
-        out = "\n\tdebug_ring_buffer=\n\t" + fmt::format("{}", fmt::join(lines, "\n\t"));
-    }
+    EmitRingBuffer(FormatRingBuffer(*ring_buf_data, programmable_core_type_), to_stdout);
+}
 
-    // This function can either dump to stdout or the log file.
+// Either dumps to stdout or to the log file.
+void WatcherDeviceReader::Core::EmitRingBuffer(const std::vector<std::string>& lines, bool to_stdout) const {
+    if (lines.empty()) {
+        return;
+    }
+    string out = "\n\tdebug_ring_buffer=\n\t" + fmt::format("{}", fmt::join(lines, "\n\t"));
     if (to_stdout) {
         log_info(tt::LogMetal, "Last ring buffer status: {}", out);
     } else {
@@ -930,50 +932,38 @@ void WatcherDeviceReader::Core::DumpRingBuffer(bool to_stdout) const {
 
 void WatcherDeviceReader::Core::DumpMpscRingBuffer(bool to_stdout) const {
     const auto& hal = reader_.env.get_hal();
-    auto dev_msgs_factory = hal.get_dev_msgs_factory(programmable_core_type_);
-    auto watcher_offset = dev_msgs_factory.offset_of<dev_msgs::mailboxes_t>(dev_msgs::mailboxes_t::Field::watcher);
-    auto ring_buf_field_offset =
-        dev_msgs_factory.offset_of<dev_msgs::watcher_msg_t>(dev_msgs::watcher_msg_t::Field::debug_ring_buf);
-    auto ring_buf_offset = watcher_offset + ring_buf_field_offset;
-    const auto* raw_ptr = reinterpret_cast<const uint8_t*>(l1_read_buf_.data());
-    // The host doesn't know at compile time which arch's (differently-capacitied)
-    // debug_mpsc_ring_buf_msg_t is laid out here, so read via arch-agnostic pointer helpers
-    // (head and the offset to slots are identical across arch variants) rather than a fixed
-    // struct type.
-    const uint8_t* rb_base = raw_ptr + ring_buf_offset;
+    const auto* rb =
+        reinterpret_cast<const debug_mpsc_ring_buf_view_t*>(mbox_data_.watcher().debug_ring_buf().data().data());
 
     uint32_t capacity = hal.get_ring_buffer_capacity();
-    uint32_t mask = hal.get_ring_buffer_mask();
-    uint32_t head = debug_mpsc_ring_buffer_head(rb_base);
-    uint32_t count = head < capacity ? head : capacity;
+    uint32_t mask = capacity - 1;  // capacity is a power of two
+    uint32_t head;
+    if (hal.get_arch() == tt::ARCH::QUASAR) {
+        // Quasar keeps head in a semaphore register, not in the mailbox.
+        constexpr uint32_t sem_read_addr =
+            GLOBAL_REGS_BASE + SEMAPHORE_REGS_BASE + SEMAPHORE_REGS_STRIDE * WATCHER_RING_BUF_SEMAPHORE;
+        reader_.env.get_cluster().read_core(
+            &head, sizeof(head), tt_cxy_pair(reader_.device_id, virtual_coord_), sem_read_addr);
+    } else {
+        head = rb->head;
+    }
 
-    std::vector<MpscRingBufEntry> entries;  // newest first
-    for (uint32_t i = 0; i < count; i++) {
-        const auto* slot = debug_mpsc_ring_buffer_slot(rb_base, (head - 1 - i) & mask);
-        if (!debug_ring_buffer_is_slot_valid(slot->write_id)) {
+    // Scan every slot rather than min(head, capacity): the semaphore is 16-bit, so head wraps and
+    // cannot bound the live entries.
+    std::vector<uint32_t> data, thread_indices;  // newest first
+    data.reserve(capacity);
+    thread_indices.reserve(capacity);
+    for (uint32_t i = 0; i < capacity; i++) {
+        const auto& slot = rb->slots[(head - 1 - i) & mask];
+        // write_id is thread_idx + 1, so 0 means the slot was never written.
+        if (slot.write_id == 0) {
             continue;
         }
-        entries.push_back({slot->data, debug_ring_buffer_get_thread_idx(slot->write_id)});
+        data.push_back(slot.data);
+        thread_indices.push_back(slot.write_id - 1);
     }
 
-    if (!entries.empty()) {
-        std::vector<uint32_t> data, thread_indices;
-        data.reserve(entries.size());
-        thread_indices.reserve(entries.size());
-        for (const auto& e : entries) {
-            data.push_back(e.data);
-            thread_indices.push_back(e.thread_idx);
-        }
-
-        auto lines = FormatRingBuffer(data, thread_indices, programmable_core_type_);
-        string out = "\n\tdebug_ring_buffer=\n\t" + fmt::format("{}", fmt::join(lines, "\n\t"));
-
-        if (to_stdout) {
-            log_info(tt::LogMetal, "Last ring buffer status: {}", out);
-        } else {
-            fprintf(reader_.f, "%s", out.c_str());
-        }
-    }
+    EmitRingBuffer(FormatRingBuffer(data, thread_indices, programmable_core_type_), to_stdout);
 }
 
 void WatcherDeviceReader::Core::DumpRunState(uint32_t state) const {

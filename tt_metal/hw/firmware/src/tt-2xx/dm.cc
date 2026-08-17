@@ -9,6 +9,7 @@
 #include "internal/hw_thread.h"
 #include "api/debug/waypoint.h"
 #include "api/debug/dprint.h"
+#include "api/debug/ring_buffer.h"
 #include "internal/debug/stack_usage.h"
 #include "internal/debug/sanitize.h"
 #include "internal/tt-2xx/dataflow_buffer/dataflow_buffer_init.h"
@@ -262,6 +263,8 @@ extern "C" uint32_t _start1() {
         risc_init();
         noc_bank_table_init(MEM_BANK_TO_NOC_SCRATCH);
         thread_sync_init();
+        // Before deassert_trisc(), so no other pusher can reach the semaphore first.
+        WATCHER_RING_BUFFER_INIT();
 
         // Initialize wait for trisc FW
         for (uint32_t i = MaxDMProcessorsPerCoreType; i < MaxNumKernels; i++) {

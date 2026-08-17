@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+// Ethernet and DRAM cores only; TENSIX uses watcher_ringbuf_2_0.cpp.
+
 #include <cstdint>
 #include "api/debug/ring_buffer.h"
 #include "api/compile_time_args.h"
@@ -10,61 +12,19 @@
 #include "internal/hw_thread.h"
 #endif
 
-/*
- * A test for the watcher ring buffer feature.
-*/
-#if defined(COMPILE_FOR_TRISC)
-#include "api/compute/common.h"
-#endif
-
 void kernel_main() {
     constexpr uint32_t num_pushes = get_compile_time_arg_val(0);
 
-#if defined(COMPILE_FOR_DM)
-    uint32_t thread_idx = internal_::get_hw_thread_idx();
-#if !defined(MULTI_DM_TEST)
-    // Single-DM test: only specified DM runs
-    constexpr uint32_t dm_id = get_compile_time_arg_val(1);
-    if (dm_id != thread_idx) {
-        return;
-    }
-#endif
-    for (uint32_t seq = 0; seq < num_pushes; seq++) {
-        WATCHER_RING_BUFFER_PUSH((thread_idx << 16) | seq);
-    }
-    return;
-#endif
-
-#if (defined(UCK_CHLKC_UNPACK) && defined(WATCHER_RINGBUF_TRISC0)) || \
-      (defined(UCK_CHLKC_MATH) && defined(WATCHER_RINGBUF_TRISC1)) || \
-      (defined(UCK_CHLKC_PACK) && defined(WATCHER_RINGBUF_TRISC2))
 #if defined(ARCH_QUASAR) || defined(ARCH_BLACKHOLE)
-    // Quasar/Blackhole: use HAL thread_idx for MPSC verification
+    // MPSC: tag each entry with the pushing processor.
     uint32_t thread_idx = internal_::get_hw_thread_idx();
     for (uint32_t seq = 0; seq < num_pushes; seq++) {
         WATCHER_RING_BUFFER_PUSH((thread_idx << 16) | seq);
     }
 #else
-    // WH SPSC: use idx pattern, compile-time filter ensures only matching TRISC runs
+    // WH SPSC: use idx pattern.
     for (uint32_t idx = 0; idx < num_pushes; idx++) {
         WATCHER_RING_BUFFER_PUSH((idx + 1) + (idx << 16));
     }
-#endif
-#endif
-
-#if defined(COMPILE_FOR_BRISC) || defined(COMPILE_FOR_NCRISC) || \
-    defined(COMPILE_FOR_ERISC) || defined(COMPILE_FOR_IDLE_ERISC) || defined(COMPILE_FOR_DRISC)
-#if defined(ARCH_BLACKHOLE)
-    // Blackhole MPSC: use HAL thread_idx
-    uint32_t thread_idx = internal_::get_hw_thread_idx();
-    for (uint32_t seq = 0; seq < num_pushes; seq++) {
-        WATCHER_RING_BUFFER_PUSH((thread_idx << 16) | seq);
-    }
-#else
-    // WH SPSC: use idx pattern
-    for (uint32_t idx = 0; idx < num_pushes; idx++) {
-        WATCHER_RING_BUFFER_PUSH((idx + 1) + (idx << 16));
-    }
-#endif
 #endif
 }

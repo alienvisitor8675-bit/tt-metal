@@ -8,6 +8,7 @@
 #include "internal/hw_thread.h"
 #include "api/debug/waypoint.h"
 #include "api/debug/dprint.h"
+#include "api/debug/ring_buffer.h"
 #include "internal/debug/stack_usage.h"
 #include "internal/debug/sanitize.h"
 #include "internal/tt-2xx/dataflow_buffer/dataflow_buffer_init.h"
@@ -124,6 +125,8 @@ extern "C" uint32_t _start1() {
         // Host-populated bank tables live in cached TL1; drop stale L2 lines before the copy.
         noc_bank_table_init(MEM_BANK_TO_NOC_SCRATCH);
         thread_sync_init();
+        // Before the go message, so no other DM can post to the semaphore first.
+        WATCHER_RING_BUFFER_INIT();
         wait_subordinates();
         mailboxes->go_messages[0].signal = RUN_MSG_DONE;
 
