@@ -378,34 +378,38 @@ void kernel_main() {
 
             reconfig_data_format_srcb(dfb_ex_global_id, dfb_input_mask_id);
             if constexpr (has_row_mask) {
-                mul_init(dfb_x_id, dfb_input_mask_id);
-                dfb_x.wait_front(block_hw);
+                mul_init(dfb_x_id, dfb_input_mask_id, /*acc_to_dest=*/false);
+                using RowMaskMul = ckl::BinaryFpu<
+                    ckl::BinaryFpuOp::Mul,
+                    ckl::input(
+                        dfb_x_id,
+                        ckl::WaitPolicy::PerBlockSize,
+                        ckl::PopPolicy::PerBlockSize,
+                        ckl::OperandKind::Block,
+                        ckl::DataFormatReconfig::Disabled),
+                    ckl::input(
+                        dfb_input_mask_id,
+                        ckl::WaitPolicy::None,
+                        ckl::PopPolicy::None,
+                        ckl::OperandKind::Row,
+                        ckl::DataFormatReconfig::Disabled,
+                        ckl::TileOffset::Set)>;
+                using XPack = ckl::PackTile<ckl::output(
+                    dfb_x_id,
+                    ckl::ReservePolicy::PerBlockSize,
+                    ckl::PushPolicy::PerBlockSize,
+                    ckl::DataFormatReconfig::Disabled)>;
 
-                for (uint32_t i = 0; i < block_h; ++i) {
-                    // The final row uses the second mask set so padding is removed before
-                    // squaring. dfb_x advances per subblock, so its tile index stays local;
-                    // dfb_input_mask stays fixed, so its tile index includes the subblock offset.
-                    const uint32_t mask_set_offset = (i == block_h - 1) ? block_w : 0;
-                    index_subblock_w_offset = 0;
-                    for (uint32_t j = 0; j < num_subblocks_w; ++j) {
-                        tile_regs_acquire();
-                        for (uint32_t w = 0; w < subblock_w; ++w) {
-                            const uint32_t index_mask = w + index_subblock_w_offset + mask_set_offset;
-                            mul_tiles(dfb_x_id, dfb_input_mask_id, w, index_mask, w);
-                        }
-                        tile_regs_commit();
-
-                        dfb_x.pop_front(subblock_w);
-                        dfb_x.reserve_back(subblock_w);
-
-                        tile_regs_wait();
-                        for (uint32_t w = 0; w < subblock_w; ++w) {
-                            pack_tile(w, dfb_x_id);
-                        }
-                        dfb_x.push_back(subblock_w);
-                        tile_regs_release();
-                        index_subblock_w_offset += subblock_w;
-                    }
+                // The mask index changes on the final row. Keep that row selection outside the
+                // chain, then use the helper for each full-width row as the manual loop did.
+                const uint32_t block_h_value = block_h;
+                for (uint32_t i = 0; i < block_h_value; ++i) {
+                    const uint32_t mask_base = (i == block_h_value - 1) ? block_w : 0;
+                    ckl::eltwise_chain<ckl::InitReconfigOwner::Caller>(
+                        ckl::IterationShape::grid(1, block_w).block_size(subblock_w),
+                        // BinaryFpu has no B-only base constructor; A's zero base compiles away.
+                        RowMaskMul{0u, mask_base},
+                        XPack{});
                 }
             } else {
                 ckl::mul<
