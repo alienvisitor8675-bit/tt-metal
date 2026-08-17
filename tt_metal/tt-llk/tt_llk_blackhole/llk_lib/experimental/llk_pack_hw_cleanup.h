@@ -42,8 +42,10 @@ inline void _llk_pack_hw_cleanup_init_default_()
  * @brief Quiesces all TRISCs and restores pack cfg banks to canonical Float16_b 32x32 geometry.
  * @tparam Dst Kernel DST_SYNC_MODE (compile-time; not modified by cleanup).
  * @tparam is_fp32_dest_acc_en Kernel DST_ACCUM_MODE (re-asserted, not changed).
- * @post Both cfg banks use Float16_b pack formats with 32x32 tiles and four faces; bank 0 is selected.
- * @post PackMode::Default MOP, ADDR_MOD, strides, PAC X, pack-dest counters, and Dest sync match startup.
+ * @note On return both cfg banks use Float16_b pack formats with 32x32 tiles and four faces,
+ *       and bank 0 is selected.
+ * @note On return the PackMode::Default MOP, ADDR_MOD, strides, PAC X, pack-dest counters, and
+ *       Dest sync match startup.
  */
 template <DstSync Dst, bool is_fp32_dest_acc_en>
 inline void _llk_pack_hw_cleanup_canonical_()
