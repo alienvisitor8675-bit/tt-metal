@@ -50,10 +50,11 @@ class KimiK3Adapter(MLAPrefillAdapter):
     ref_cache_env = "TT_KIMI_K3_PREFILL_HOST_REF_CACHE"
     mla_ref_cache_env = "KIMI_K3_MLA_REF_CACHE"
     ttnn_cache_env = "TT_KIMI_K3_PREFILL_TTNN_CACHE"
-    # No K3 checkpoint is staged anywhere reachable, and the MXFP4 weights would need a dequant path
-    # for the MoE side anyway (MLA itself is exempt: quantization_config.ignore covers self_attn).
-    # False makes the pretrained fixtures SKIP rather than fail.
+    # The MoE side is MXFP4 with no dequantizer here, so the full-transformer fixtures SKIP.
     supports_pretrained = False
+    # MLA alone is loadable: quantization_config.ignore covers self_attn, so those weights are bf16.
+    # The first full-attention layer, not 0 -- layers 0-2 are KDA and hold no MLA tensors.
+    pretrained_mla_layer = KimiK3Config.mla_layer_ids()[0]
 
     @property
     def config_builder(self) -> Callable:
