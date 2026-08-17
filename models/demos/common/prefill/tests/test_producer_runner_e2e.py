@@ -388,7 +388,20 @@ def _running_runner(tag: str, sc: dict, **extra):
     os.makedirs(_REPORT_DIR, exist_ok=True)
     log_path = os.path.join(_REPORT_DIR, f"ci_runner_{tag}.log")
     _cleanup_ipc()  # a stale table/descriptor from a prior scenario would make the readiness poll pass early
-    env = _scenario_env(sc, PREFILL_MOCK_MIGRATION="1", **extra)
+    # LayerAck env. Every runner this harness starts is paired with a PREFILL_PRODUCER_CHECK_PCC=1 producer
+    # that reads the KV back over UMD, and an H2D push returning only means the tokens were delivered, not
+    # that the layers were written -- so the read has to wait on the per-layer ack channel, and the producer
+    # refuses to run without it. Single-rank needs BOTH vars, per the runner's gate
+    # `use_router = (not single_rank) or (use_d2h and enable_layer_ack)`; together they select the D2H
+    # backend, which enqueues each ack as a device op right after zero_padded_kv_cache on the same CQ (no
+    # host sync, so pipelining survives). ENABLE_LAYER_ACK alone is also correct but takes the host-callback
+    # backend, which does a ttnn.synchronize_device per layer -- measured ~1.2 s per ack on a 78-layer
+    # galaxy run, i.e. minutes added per scenario. Do NOT add PREFILL_CHECK_COMPLETIONS: its consumer would
+    # race this producer on the same counter channel and split the count. D2H is rejected outright under
+    # PREFILL_USE_TRACE=1 (per-chunk ack record can't be captured); no scenario here sets it.
+    env = _scenario_env(
+        sc, PREFILL_MOCK_MIGRATION="1", PREFILL_ENABLE_LAYER_ACK="1", PREFILL_LAYER_ACK_D2H="1", **extra
+    )
     ready_timeout_s = int(sc.get("ready_timeout_s", _READY_TIMEOUT_S))
     mode = _launch_mode()
     if mode == "ci":
