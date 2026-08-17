@@ -2068,8 +2068,7 @@ jobs:
                           "ltx-2.3-fast-t2v",
                           "ltx-2.3-pro-i2v",
                           "ltx-2.3-fast-i2v",
-                          "resnet50",
-                          "bge_m3"
+                          "resnet50"
                         ],
                         "type": "string"
                       },
@@ -2162,8 +2161,7 @@ jobs:
                           "flux.1-schnell",
                           "flux.1-dev",
                           "ltx-2.3",
-                          "resnet50",
-                          "bge_m3"
+                          "resnet50"
                         ],
                         "type": "string"
                       },
@@ -2260,7 +2258,8 @@ jobs:
                           "mixtral-8x7b",
                           "gpt-oss-20b",
                           "sdxl",
-                          "vit"
+                          "vit",
+                          "bge_m3"
                         ],
                         "type": "string"
                       },
@@ -2355,7 +2354,8 @@ jobs:
                           "shallow-unet",
                           "gpt-oss-20b",
                           "sdxl",
-                          "vit"
+                          "vit",
+                          "bge_m3"
                         ],
                         "type": "string"
                       },
